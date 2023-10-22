@@ -1,0 +1,372 @@
+---
+title: "Result Preparation and Plots"
+author: "Nikola Ondrikova"
+date: "2023-08-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(caret)
+library(ggplot2)
+library(scoringutils)
+
+
+### tsglm ------------------
+cv.tsglm.basic <- read.csv("./Data/tsglm_cv_basic.csv", row.names=1, 
+                               sep="", stringsAsFactors=TRUE)
+cv.tsglm.addCET <- read.csv("./Data/tsglm_cv_addCET.csv", row.names=1, 
+                               sep="", stringsAsFactors=TRUE)
+cv.tsglm.addMobility <- read.csv("./Data/tsglm_cv_addMobility.csv", row.names=1, 
+                               sep="", stringsAsFactors=TRUE)
+
+### qrf ------------------
+cv.qrf.basic <- read.csv("./Data/qrf_cv_basic.csv", row.names=1, 
+                               sep="", stringsAsFactors=TRUE)
+cv.qrf.addCET <- read.csv("./Data/qrf_cv_addCET.csv", row.names=1, 
+                               sep="", stringsAsFactors=TRUE)
+cv.qrf.addMobility <- read.csv("./Data/qrf_cv_addMobility.csv", row.names=1, 
+                               sep="", stringsAsFactors=TRUE)
+### reg glm ----------------
+cv.reg.basic <- read.csv("./Data/reg_cv_basic.csv", row.names=1, 
+                               sep="", stringsAsFactors=TRUE)
+#cv.reg.addGT <- read.csv("./Data/reg_cv_addGT.csv", row.names=1, 
+#                               sep="", stringsAsFactors=TRUE)
+cv.reg.addCET <- read.csv("./Data/reg_cv_addCET.csv", row.names=1, 
+                               sep="", stringsAsFactors=TRUE)
+cv.reg.addMobility <- read.csv("./Data/reg_cv_addMobility.csv", row.names=1, 
+                               sep="", stringsAsFactors=TRUE)
+
+
+# new_var == pandemic
+modelMetrics <- function(data, predType=1, new_var, pred_col){
+ 
+  current_df = data[which(data$predType == predType & data$new_var== new_var),]
+  
+  this.mae = caret::MAE(current_df[,pred_col], current_df$observed)
+  wis = scoringutils::interval_score(true_values = current_df$observed, 
+                  lower = current_df[,(length(current_df[1,])-2)], 
+                  upper = current_df[,(length(current_df[1,])-1)], 
+                  interval_range = 95,
+                  weigh = 0.05)
+  this.wis = mean(wis) 
+  this.pearson = cor(current_df[,pred_col], current_df$observed, method = "pearson")
+  
+  metrics_df = data.frame(RMSE=this.rmse,
+                          MAE=this.mae,
+                          WIS=this.wis,
+                          pearson=this.pearson)
+  result = list(metrics_df = metrics_df,
+                weekly_wis = wis)
+  
+  return(result)
+}
+
+
+library(dplyr)
+
+# Create a function for the transformation
+add_new_var <- function(df) {
+  df %>% 
+    mutate(earlyPandemic = ifelse(predYear == 2020 & (predWeek > 11 & predWeek < 27), 1, 0)) %>%
+    mutate(s2021 = ifelse((predYear == 2020 & predWeek > 26) | predYear == 2021, 2, 0)) %>%
+    mutate(new_var=earlyPandemic+s2021) %>%
+    select(-earlyPandemic, -s2021)
+}
+
+
+# Read datasets
+datasets <- list(
+  tsglm.basic = read.csv("./Data/tsglm_cv_basic.csv", row.names=1, sep="", stringsAsFactors=TRUE),
+  tsglm.addCET = read.csv("./Data/tsglm_cv_addCET.csv", row.names=1, sep="", stringsAsFactors=TRUE),
+  tsglm.addMobility = read.csv("./Data/tsglm_cv_addMobility.csv", row.names=1, sep="", stringsAsFactors=TRUE),
+  qrf.basic = read.csv("./Data/qrf_cv_basic.csv", row.names=1, sep="", stringsAsFactors=TRUE),
+  qrf.addCET = read.csv("./Data/qrf_cv_addCET.csv", row.names=1, sep="", stringsAsFactors=TRUE),
+  qrf.addMobility = read.csv("./Data/qrf_cv_addMobility.csv", row.names=1, sep="", stringsAsFactors=TRUE),
+  reg.basic = read.csv("./Data/reg_cv_basic.csv", row.names=1, sep="", stringsAsFactors=TRUE),
+ # reg.addGT = read.csv("./Data/reg_cv_addGT.csv", row.names=1, sep="", stringsAsFactors=TRUE),
+  reg.addCET = read.csv("./Data/reg_cv_addCET.csv", row.names=1, sep="", stringsAsFactors=TRUE),
+  reg.addMobility = read.csv("./Data/reg_cv_addMobility.csv", row.names=1, sep="", stringsAsFactors=TRUE)
+
+)
+
+# Apply the function to each dataset
+datasets <- lapply(datasets, add_new_var)
+
+# Assign the modified datasets back to their respective variables
+cv.tsglm.basic <- datasets$tsglm.basic
+cv.tsglm.addCET <- datasets$tsglm.addCET
+cv.tsglm.addMobility <- datasets$tsglm.addMobility
+
+cv.qrf.basic <- datasets$qrf.basic
+cv.qrf.addCET <- datasets$qrf.addCET
+cv.qrf.addMobility <- datasets$qrf.addMobility
+
+cv.reg.basic <- datasets$reg.basic
+#cv.reg.addGT <- datasets$reg.addGT
+cv.reg.addCET <- datasets$reg.addCET
+cv.reg.addMobility <- datasets$reg.addMobility
+
+
+```
+
+## Time Series GLM
+
+```{r tsglm}
+
+# Initialize an empty dataframe to store results
+ts_results_df <- data.frame()
+ts_perm_df <- data.frame()
+# Loop over the new variable values instead of seasons
+for (j in c(0, 1,2)) {
+  for(i in 1:4){
+    # Store model metrics for different models
+    basic_metrics <- modelMetrics(cv.tsglm.basic, predType=i, new_var=j, pred_col="tsglmPred")
+    addCET_metrics <- modelMetrics(cv.tsglm.addCET, predType=i, new_var=j, pred_col="tsglmPred")
+    addMobility_metrics <- modelMetrics(cv.tsglm.addMobility, predType=i, new_var=j, pred_col="tsglmPred")
+
+    # Append the results to the dataframe
+    ts_results_df <- rbind(ts_results_df, 
+                        cbind(data.frame(PredType=i, Pandemic=j, ModelType="basic", PredColumn="tsglmPred"), basic_metrics[[1]]),
+                        cbind(data.frame(PredType = i, Pandemic = j, ModelType = "addCET", PredColumn = "tsglmPred"), addCET_metrics[[1]]),
+                        cbind(data.frame(PredType = i, Pandemic = j, ModelType = "addMobility", PredColumn = "tsglmPred"), addMobility_metrics[[1]])
+    )
+    
+    basic.cet = surveillance::permutationTest(basic_metrics[[2]], addCET_metrics[[2]])
+    basic.mobility= surveillance::permutationTest(basic_metrics[[2]], addMobility_metrics[[2]])
+    
+    ts_perm_df <- rbind(ts_perm_df, 
+                        cbind(data.frame(PredType=i, Pandemic=j, ModelType="CET added", PredColumn="tsglm"), PermTest.diff=basic.cet$diffObs, PermTest.p=basic.cet$pVal.permut),
+                        cbind(data.frame(PredType=i, Pandemic=j, ModelType="Mobility added", PredColumn="tsglm"), PermTest.diff=basic.mobility$diffObs, PermTest.p=basic.mobility$pVal.permut))
+  }
+}
+
+# Return the dataframe
+ts_results_df
+ts_perm_df
+
+
+```
+
+## Quantile Regression Forest
+
+```{r qrf}
+qrf_results_df <- data.frame()
+qrf_perm_df <- data.frame()
+# Loop over the new variable values instead of seasons
+for (j in c(0, 1,2)) {
+  for(i in 1:4){
+    # Store model metrics for different models
+    basic_metrics <- modelMetrics(cv.qrf.basic, predType=i, new_var=j, pred_col="qrfPred")
+    addCET_metrics <- modelMetrics(cv.qrf.addCET, predType=i, new_var=j, pred_col="qrfPred")
+    addMobility_metrics <- modelMetrics(cv.qrf.addMobility, predType=i, new_var=j, pred_col="qrfPred")
+
+    # Append the results to the dataframe
+    qrf_results_df <- rbind(qrf_results_df, 
+                        cbind(data.frame(PredType = i, Pandemic = j, ModelType = "basic", PredColumn = "qrfPred"), basic_metrics[[1]]),
+                        cbind(data.frame(PredType = i, Pandemic = j, ModelType = "addCET", PredColumn = "qrfPred"), addCET_metrics[[1]]),
+                        cbind(data.frame(PredType = i, Pandemic = j, ModelType = "addMobility", PredColumn = "qrfPred"), addMobility_metrics[[1]])
+    )
+    basic.cet = surveillance::permutationTest(basic_metrics[[2]], addCET_metrics[[2]])
+    basic.mobility= surveillance::permutationTest(basic_metrics[[2]], addMobility_metrics[[2]])
+
+    qrf_perm_df <- rbind(qrf_perm_df, 
+                     cbind(data.frame(PredType=i, Pandemic=j, ModelType="CET added", PredColumn="qrf"), PermTest.diff=basic.cet$diffObs, PermTest.p=basic.cet$pVal.permut),
+                     cbind(data.frame(PredType=i, Pandemic=j, ModelType="Mobility added", PredColumn="qrf"), PermTest.diff=basic.mobility$diffObs, PermTest.p=basic.mobility$pVal.permut))
+    }
+}
+
+# Return the dataframe
+qrf_results_df
+qrf_perm_df
+
+```
+
+# Regularized GLM
+
+```{r reg}
+reg_results_df <- data.frame()
+reg_perm_df <- data.frame()
+# Loop over the new_var values (0 and 1 for non-pandemic and pandemic respectively)
+for (j in c(0, 1,2)) {
+  for(i in 1:4){
+    
+    # Store model metrics for different models and prediction columns
+    basic_reg_metrics <- modelMetrics(cv.reg.basic, predType=i, new_var=j, pred_col="regPred")
+    basic_nb_metrics <- modelMetrics(cv.reg.basic, predType=i, new_var=j, pred_col="nbPred")
+    
+  #  addGT_reg_metrics <- modelMetrics(cv.reg.addGT, predType=i, new_var=j, pred_col="regPred")
+   # addGT_nb_metrics <- modelMetrics(cv.reg.addGT, predType=i, new_var=j, pred_col="nbPred")
+    
+    addCET_reg_metrics <- modelMetrics(cv.reg.addCET, predType=i, new_var=j, pred_col="regPred")
+    addCET_nb_metrics <- modelMetrics(cv.reg.addCET, predType=i, new_var=j, pred_col="nbPred")
+    
+    addMobility_reg_metrics <- modelMetrics(cv.reg.addMobility, predType=i, new_var=j, pred_col="regPred")
+    addMobility_nb_metrics <- modelMetrics(cv.reg.addMobility, predType=i, new_var=j, pred_col="nbPred")
+    
+    # Append the results to the dataframe
+    reg_results_df <- rbind(reg_results_df, 
+                        cbind(data.frame(PredType = i, Pandemic = j, ModelType = "basic", PredColumn = "regPred"), basic_reg_metrics[[1]]),
+                        cbind(data.frame(PredType = i, Pandemic = j, ModelType = "basic", PredColumn = "nbPred"), basic_nb_metrics[[1]]),
+                        #cbind(data.frame(PredType = i, Pandemic = j, ModelType = "addGT", PredColumn = "regPred"), addGT_reg_metrics[[1]]),
+                        #cbind(data.frame(PredType = i, Pandemic = j, ModelType = "addGT", PredColumn = "nbPred"), addGT_nb_metrics[[1]]),
+                        cbind(data.frame(PredType = i, Pandemic = j, ModelType = "addCET", PredColumn = "regPred"), addCET_reg_metrics[[1]]),
+                        cbind(data.frame(PredType = i, Pandemic = j, ModelType = "addCET", PredColumn = "nbPred"), addCET_nb_metrics[[1]]),
+                        cbind(data.frame(PredType = i, Pandemic = j, ModelType = "addMobility", PredColumn = "regPred"), addMobility_reg_metrics[[1]]),
+                        cbind(data.frame(PredType = i, Pandemic = j, ModelType = "addMobility", PredColumn = "nbPred"), addMobility_nb_metrics[[1]])
+    )
+    
+    basic.cet = surveillance::permutationTest(basic_reg_metrics[[2]], addCET_reg_metrics[[2]])
+    #basic.gt = surveillance::permutationTest(basic_reg_metrics[[2]], addGT_reg_metrics[[2]])
+    basic.mobility= surveillance::permutationTest(basic_reg_metrics[[2]], addMobility_reg_metrics[[2]])
+
+    reg_perm_df <- rbind(reg_perm_df, 
+                     cbind(data.frame(PredType=i, Pandemic=j, ModelType="CET added", PredColumn="reg"), PermTest.diff=basic.cet$diffObs, PermTest.p=basic.cet$pVal.permut),
+                    # cbind(data.frame(PredType=i, Pandemic=j, ModelType="GT added", PredColumn="reg"), PermTest.diff=basic.cet$diffObs, PermTest.p=basic.gt$pVal.permut),
+                     cbind(data.frame(PredType=i, Pandemic=j, ModelType="Mobility added", PredColumn="reg"), PermTest.diff=basic.mobility$diffObs, PermTest.p=basic.mobility$pVal.permut))
+  }
+}
+
+# Return the dataframe
+reg_results_df
+reg_perm_df
+
+```
+
+
+
+```{r combined, include=FALSE}
+
+combined_pandemic = rbind(ts_results_df, qrf_results_df, reg_results_df)
+
+write.table(combined_pandemic, './Data/combined_pandemic.csv')#
+
+combined_permutation = rbind(ts_perm_df, qrf_perm_df, reg_perm_df)
+
+write.table(combined_permutation, './Data/combined_permutation.csv')#
+
+```
+
+
+## Combined Results - Plots
+
+```{r Plots}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(ggplot2))
+
+# ... [rest of the code to generate the df dataframe]
+df <- read.csv("./Data/combined_pandemic.csv", row.names=1, 
+               sep="", stringsAsFactors=TRUE)
+
+
+df_modified <- df %>%
+  gather(key="Metric", value="Value", MAE, WIS, pearson)%>%
+  # Convert PredType to Horizon
+  mutate(Horizon = factor(PredType, 
+                          levels = c(1, 2, 3, 4),
+                          labels = c("hindcast", "nowcast", "1W ahead", "2W ahead"),
+                          ordered = TRUE)) %>%
+  
+  # Rename PredColumn to Model and remap its values
+  mutate(Model = case_when(
+    PredColumn == "tsglmPred" ~ "Time Series GLM",
+    PredColumn == "qrfPred" ~ "Quantile RF",
+    PredColumn == "regPred" ~ "Regularized GLM",
+    TRUE ~ as.character(PredColumn)  # This keeps other values as they are
+  )) %>%
+  
+  # Remove rows where Model is nbPred
+  filter(Model != "nbPred") %>%
+  
+  mutate(ModelType = factor(case_when(
+    ModelType == "basic" ~ "No external data",
+    ModelType == "addCET" ~ "CET added",
+    ModelType == "addGT" ~ "GT added",
+    ModelType == "addMobility" ~ "Mobility added",
+    TRUE ~ as.character(ModelType)  # This keeps other values unchanged
+  ), levels = c("No external data", "CET added", "GT added", "Mobility added")))%>%  # Ordering
+  
+  # Drop the original PredType and PredColumn columns
+  select(-PredType, -PredColumn)
+
+# View the modified dataframe
+head(df_modified)
+
+df_modified$Metric[df_modified$Metric == "pearson"] <- "Pearson"
+
+df_modified <- df_modified %>%
+  mutate(Metric = if_else(Metric == "pearson", "Pearson", Metric))
+
+## pearson and WIS separate (final plots) ----------------------
+plot_WIS <- function(pandemic_status){
+  df_wis <- subset(df_modified, Metric == "WIS" & Pandemic == pandemic_status)
+  
+  p_wis <- ggplot(df_wis, aes(x=Horizon, y=ModelType, fill=Value)) + 
+    geom_tile(aes(width=0.9, height=0.9)) +
+    geom_text(aes(label=sprintf("%.2f", Value)), color="black", size=3) +
+    scale_fill_viridis_c(option = 'C', direction = -1, name = "WIS") +
+    theme_minimal() +
+    facet_wrap(~ Model) +
+    #labs(title=paste("WIS -", pandemic_status), x=NULL, y=NULL) +
+    theme(axis.title.y=element_blank(), 
+          axis.title.x=element_blank(),
+          axis.text.x = element_text(angle=45, hjust=1),
+          #legend.position = "bottom",
+          strip.background = element_blank(),
+          strip.text.x = element_text(size = 12, face = "bold"),
+          legend.text = element_text(size = 8),  # Adjust this value to desired size
+          legend.key.size = unit(0.5, "cm"),      # Adjust this value to desired size
+          legend.spacing.x = unit(0.5, "cm"),     # Adjust this value to desired spacing
+          legend.spacing.y = unit(0.5, "cm")      # Adjust this value to desired spacing
+    )
+  
+  return(p_wis)
+}
+
+# Usage:
+plot_wis_pandemic1=plot_WIS(1)
+
+
+plot_Pearson <- function(pandemic_status){
+  df_pearson <- subset(df_modified, Metric == "Pearson" & Pandemic == pandemic_status)
+  
+  p_pearson <- ggplot(df_pearson, aes(x=Horizon, y=ModelType, fill=Value)) + 
+    geom_tile(aes(width=0.9, height=0.9)) +
+    geom_text(aes(label=sprintf("%.2f", Value)), color="black", size=3) +
+    scale_fill_viridis_c(option = 'C',  name = "Pearson") +
+    theme_minimal() +
+    facet_wrap(~ Model) +
+    #labs(title=paste("Pearson -", pandemic_status), x=NULL, y=NULL) +
+    theme(axis.title.y=element_blank(), 
+          axis.title.x=element_blank(),
+          axis.text.x = element_text(angle=45, hjust=1),
+          #legend.position = "bottom",
+          strip.background = element_blank(),
+          strip.text.x = element_text(size = 12, face = "bold"),
+          legend.text = element_text(size = 8),  # Adjust this value to desired size
+          legend.key.size = unit(0.5, "cm"),      # Adjust this value to desired size
+          legend.spacing.x = unit(0.5, "cm"),     # Adjust this value to desired spacing
+          legend.spacing.y = unit(0.5, "cm")      # Adjust this value to desired spacing
+    )
+  
+  return(p_pearson)
+}
+
+# Usage:
+plot_pearson_pandemic1=plot_Pearson(1)
+
+#Combine the plots - example
+library(ggpubr)
+pandemic_plot1 <- ggarrange(
+  plot_wis_pandemic1, plot_pearson_pandemic1, 
+  ncol = 1, nrow = 2 #,labels = c( "WIS", "Pearson")
+)
+
+# Early Covid-19 pandemic period and the end of norovirus season 2019-2020 (week 12 – week 20, 2020)   
+pandemic_plot1
+              
+
+```

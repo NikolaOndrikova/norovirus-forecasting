@@ -1,0 +1,218 @@
+---
+title: "Norovirus Forecasting in England - QRF"
+author: "Nikola Ondrikova"
+date: "31/07/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(quantregForest)
+library(caret)
+
+model_data <- read.csv("C:/Users/non/Desktop/forecasting-with-mobility/Data/model_data.csv", sep="")
+noro_noise <- read.csv("./Data/noro_with_noise.csv", sep="")
+NL = length(noro_noise[,1])
+
+# Define a function to get indices
+get_indices <- function(year, week_start = 27, week_end = 26) {
+  start <- which(noro_noise$Year == year & noro_noise$Week == week_start)
+  end <- which(noro_noise$Year == year + 1 & noro_noise$Week == week_end)
+  c(start, end)
+}
+
+# Use the function to create the list
+season_index <- list(
+  s1415 = get_indices(2014),
+  s1516 = get_indices(2015),
+  s1617 = get_indices(2016),
+  s1718 = get_indices(2017),
+  s1819 = get_indices(2018),
+  s1920 = get_indices(2019),
+  s2021 = get_indices(2020)
+)
+
+
+
+```
+
+
+
+```{r cv and vars}
+qrfCvTotal <- function(this.fold, data, x_col){
+  #TRAIN <- 1:this.fold
+  TRAIN <- 1:(this.fold-4)
+  TEST <- max(TRAIN) + 1:4
+  
+  model.fit <- quantregForest(data[TRAIN, x_col],#12
+                              data[TRAIN, "count"],
+                              ntree=1000)
+  #browser()
+  pred = predict(model.fit, 
+                 newdata=data[TEST,x_col],
+                 quantiles=0.5)
+
+  this.result <- data.frame(
+    lower = as.numeric(pred[,1]),
+    pred = as.numeric(pred[,2]), 
+    upper = as.numeric(pred[,3]),
+    observed = as.vector(data[TEST,'count']))
+  #browser()
+  return(this.result)
+}
+
+qrf.col.basic = c("seasonality","mean3w")
+qrf.col.addCET = c("seasonality","temperature","mean3w")
+qrf.col.addMobility = c("seasonality","temperature","rr_estimate","gp_estimate",
+                        "r_estimate","t_estimate","w_estimate","mean3w")
+```
+
+## QRF - Basic
+
+```{r qrf basic, echo=FALSE}
+
+cv.qrf.basic = c()
+for (season in 4:length(season_index)) {
+  # helper variables
+  i1 = season_index[[season]][1]
+  i2 = season_index[[season]][2]
+  current_season_cv = seq(i1, i2, by=1)
+  
+  seeds = set.seed(123456)
+  
+  cv.qrf.pred <- sapply(current_season_cv,
+                        FUN = qrfCvTotal,
+                        data = qrf_data,
+                        x_col = qrf.col.basic)
+  
+  # helper variables
+  PREDL = length(cv.qrf.pred[1,])
+  
+  # data ready for ensemble training
+  cv.qrf.basic[[season]] = data.frame(
+    season = rep(names(season_index)[season], times = PREDL, each=4),
+    predWeek = rep(noro_eng$Week[i1:(i2)], each=4),
+    predYear = rep(noro_eng$Year[i1:(i2)], each=4),# 4 prediction times=PREDL,
+    predType = rep(c(1,2,3,4), times = PREDL),
+    qrfPred = unlist(cv.qrf.pred['pred',]),
+    qrfLower = unlist(cv.qrf.pred['lower',]),
+    qrfUpper = unlist(cv.qrf.pred['upper',]),
+    observed = unlist(cv.qrf.pred['observed',]))
+  
+  print(paste0(names(season_index)[season]," Done!"))
+}
+
+cv.qrf.basic = rbind(cv.qrf.basic[[1]],
+                       cv.qrf.basic[[2]],
+                       cv.qrf.basic[[3]],
+                       cv.qrf.basic[[4]],
+                       cv.qrf.basic[[5]],
+                       cv.qrf.basic[[6]],
+                       cv.qrf.basic[[7]])
+
+str(cv.qrf.basic)
+
+write.table(cv.qrf.basic, './Data/qrf_cv_basic.csv')
+
+```
+
+## QRF - Basic + CET
+
+```{r qrf cet, echo=FALSE}
+
+cv.qrf.addCET = c()
+for (season in 4:length(season_index)) {
+  # helper variables
+  i1 = season_index[[season]][1]
+  i2 = season_index[[season]][2]
+  current_season_cv = seq(i1, i2, by=1)
+  
+  seeds = set.seed(123456)
+  
+  cv.qrf.pred <- sapply(current_season_cv,
+                        FUN = qrfCvTotal,
+                        data = qrf_data,
+                        x_col = qrf.col.addCET)
+  
+  # helper variables
+  PREDL = length(cv.qrf.pred[1,])
+  
+  # data ready for ensemble training
+  cv.qrf.addCET[[season]] = data.frame(
+    season = rep(names(season_index)[season], times = PREDL, each=4),
+    predWeek = rep(noro_eng$Week[i1:(i2)], each=4),
+    predYear = rep(noro_eng$Year[i1:(i2)], each=4),# 4 prediction times=PREDL,
+    predType = rep(c(1,2,3,4), times = PREDL),
+    qrfPred = unlist(cv.qrf.pred['pred',]),
+    qrfLower = unlist(cv.qrf.pred['lower',]),
+    qrfUpper = unlist(cv.qrf.pred['upper',]),
+    observed = unlist(cv.qrf.pred['observed',]))
+  
+  print(paste0(names(season_index)[season]," Done!"))
+}
+
+cv.qrf.addCET = rbind(cv.qrf.addCET[[1]],
+                       cv.qrf.addCET[[2]],
+                       cv.qrf.addCET[[3]],
+                       cv.qrf.addCET[[4]],
+                       cv.qrf.addCET[[5]],
+                       cv.qrf.addCET[[6]],
+                       cv.qrf.addCET[[7]])
+
+str(cv.qrf.addCET)
+
+write.table(cv.qrf.addCET, './Data/qrf_cv_addCET.csv')
+
+```
+
+
+## QRF - Basic + CET + Mobility
+
+```{r qrf mobility, echo=FALSE}
+
+cv.qrf.addMobility = c()
+for (season in 4:length(season_index)) {
+  # helper variables
+  i1 = season_index[[season]][1]
+  i2 = season_index[[season]][2]
+  current_season_cv = seq(i1, i2, by=1)
+  
+  seeds = set.seed(123456)
+  
+  cv.qrf.pred <- sapply(current_season_cv,
+                        FUN = qrfCvTotal,
+                        data = qrf_data,
+                        x_col = qrf.col.addMobility)
+  
+  # helper variables
+  PREDL = length(cv.qrf.pred[1,])
+  
+  # data ready for ensemble training
+  cv.qrf.addMobility[[season]] = data.frame(
+    season = rep(names(season_index)[season], times = PREDL, each=4),
+    predWeek = rep(noro_eng$Week[i1:(i2)], each=4),
+    predYear = rep(noro_eng$Year[i1:(i2)], each=4),# 4 prediction times=PREDL,
+    predType = rep(c(1,2,3,4), times = PREDL),
+    qrfPred = unlist(cv.qrf.pred['pred',]),
+    qrfLower = unlist(cv.qrf.pred['lower',]),
+    qrfUpper = unlist(cv.qrf.pred['upper',]),
+    observed = unlist(cv.qrf.pred['observed',]))
+  
+  print(paste0(names(season_index)[season]," Done!"))
+}
+
+cv.qrf.addMobility = rbind(cv.qrf.addMobility[[1]],
+                       cv.qrf.addMobility[[2]],
+                       cv.qrf.addMobility[[3]],
+                       cv.qrf.addMobility[[4]],
+                       cv.qrf.addMobility[[5]],
+                       cv.qrf.addMobility[[6]],
+                       cv.qrf.addMobility[[7]])
+
+str(cv.qrf.addMobility)
+
+write.table(cv.qrf.addMobility, './Data/qrf_cv_addMobility.csv')
+
+```

@@ -1,0 +1,327 @@
+---
+title: "Norovirus Forecasting in England - RegGLM"
+author: "Nikola Ondrikova"
+date: "2023-07-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("C:/Users/non/Desktop/forecasting-with-mobility")
+
+library(tidyverse)
+library(mpath)
+library(reshape2)
+
+model_data <- read.csv("C:/Users/non/Desktop/forecasting-with-mobility/Data/model_data.csv", sep="")
+noro_noise <- read.csv("./Data/noro_with_noise.csv", sep="")
+NL = length(noro_noise[,1])
+
+# Define a function to get indices
+get_indices <- function(year, week_start = 27, week_end = 26) {
+  start <- which(noro_noise$Year == year & noro_noise$Week == week_start)
+  end <- which(noro_noise$Year == year + 1 & noro_noise$Week == week_end)
+  c(start, end)
+}
+
+seasons_gt <- list(
+  s1415 = get_indices(2014, week_start = 40, week_end = 21),
+  s1516 = get_indices(2015, week_start = 40, week_end = 21),
+  s1617 = get_indices(2016, week_start = 40, week_end = 21),
+  s1718 = get_indices(2017, week_start = 40, week_end = 21),
+  s1819 = get_indices(2018, week_start = 40, week_end = 21),
+  s1920 = get_indices(2019, week_start = 40, week_end = 21),
+  s2021 = get_indices(2020, week_start = 40, week_end = 21)
+)
+
+```
+
+## Negative binomial GLM net
+
+```{r intro}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+regCvTotal <- function(this.fold, data, x_col){
+  
+  week_names = data$Yw
+  setwd("C:/Users/non/Desktop/forecasting-with-mobility")
+  #browser()
+  if(sub('^.{0,4}', x = week_names[(this.fold-3)], replacement = '',perl=T) == "53") {
+    END = "2016011"
+    START = "2011011"
+  } else {
+    END = paste0(week_names[(this.fold-3)],"1")
+    START_temp = as.numeric(sub('.{0,3}$', x = END, replacement = '',perl=T))-5
+    START = paste0(as.character(START_temp),
+                   sub('^.{0,4}', x = END, replacement = '',perl=T))
+  }
+  
+  file_name = paste0('./Data/GT/','gt',START,END,'.csv')
+  internet_data <- read.csv(file_name, sep="")
+  #browser()
+  TRAIN <- (this.fold-length(internet_data[,1])):(this.fold-4)
+  TEST <- max(TRAIN) + 1:4
+  
+  internet_temp = apply(internet_data[2:length(internet_data[1,])], 
+                        FUN=as.numeric, MARGIN=2)
+  internet_temp[is.na(internet_temp)] <- 0
+  current_train = cbind(data[TRAIN,],#12 4:8
+                        internet_temp[1:length(TRAIN),])
+                        #apply(internet_temp[1:length(TRAIN),],FUN=normalise, MARGIN=2)))
+  current_test = cbind(data[TEST,],#12
+                       internet_temp[1:length(TEST),])
+                       #apply(internet_temp[1:length(TEST),],FUN=normalise, MARGIN=2)))
+  #norm_internet = apply(internet_temp, FUN=normalise, MARGIN=2)
+  set.seed(123589)
+  
+
+  model_fit <- cv.glmregNB(count ~ ., 
+                           data = current_train[,c("count",x_col)],
+                           #maxit.theta=5000,
+                           plot.it = FALSE,
+                           trace=FALSE,
+                           #foldid = rep(1:43, times=6, each=1),
+                           #penalty= 'snet',
+                           alpha = 0.01,#alp, # 1 lasso, 0 ridge
+                           lambda=seq(0.005, 0.5, by=0.01)
+  ) 
+  
+  preds <- predict(model_fit, newx = current_test[,x_col], type='response')
+  #browser()
+  ### calculate intervals
+  interval_fit = MASS::glm.nb(count ~ ., data = current_train[,c("count",x_col)])
+  pred_intervals = ciTools::add_pi(df=current_test[,c("count",x_col)], 
+                                   fit=interval_fit, names = c("lwr", "upr"))
+
+  this.result <- data.frame(pred.reg.nb = as.vector(preds),
+                            pred.nb = pred_intervals[,'pred'],
+                            lower = pred_intervals[,'lwr'],
+                            upper = pred_intervals[,'upr'],
+                            #predType = rep(c('1','2','3','4'), times=9, each=1),
+                            observed = data$count[TEST])
+  
+  gc()
+  
+  return(this.result)
+}
+
+google_trends = c("symptoms.norovirus","norovirus.how.long","symptoms.of.norovirus","norovirus.incubation",
+                  "norovirus.treatment","what.is.norovirus","norovirus.outbreak","sickness.bug",
+                  "stomach.bug","norovirus.first.symptoms","norovirus","stomach.flu","flu.symptoms",
+                  "gastric.flu")
+
+reg.col.basic = c("seasonality","mean3w")
+#reg.col.addGT = c("seasonality","mean3w", google_trends) # will not run 
+reg.col.addCET = c("seasonality","temperature","mean3w")#, google_trends)
+reg.col.addMobility = c("seasonality","temperature", "mean3w",
+                        #google_trends,
+                        "rr_estimate","gp_estimate",
+                        "r_estimate","t_estimate","w_estimate")
+
+```
+
+## Regularized / Simple Negative Binomial - Basic
+
+```{r basic, echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+head(model_data)
+
+cv.reg.basic = c()
+for (season in 4:length(seasons_gt)) {
+  # helper variables
+  i1 = seasons_gt[[season]][1]
+  i2 = seasons_gt[[season]][2]
+  current_season_cv = seq(i1, i2, by=1)
+  current_train = c(1:(i1-1))
+  
+  # perform cross-validation
+  cv.reg.pred <- sapply(current_season_cv,
+                        FUN = regCvTotal,
+                        data = model_data,
+                        x_col=reg.col.basic)
+  # helper variables
+  PREDL = length(cv.reg.pred[1,])
+  
+  # data ready for ensemble training
+  cv.reg.basic[[season]] = data.frame(
+    season = rep(names(seasons_gt)[season], times = PREDL, each=4),
+    predWeek = rep(noro_eng$Week[i1:(i2)], each=4),
+    predYear = rep(noro_eng$Year[i1:(i2)], each=4),# 4 prediction times=PREDL,
+    predType = rep(c(1,2,3,4), times = PREDL),
+    regPred = unlist(cv.reg.pred['pred.reg.nb',]),
+    nbPred = unlist(cv.reg.pred['pred.nb',]),
+    nbLower = unlist(cv.reg.pred['lower',]),
+    nbUpper = unlist(cv.reg.pred['upper',]),
+    observed = unlist(cv.reg.pred['observed',]))
+  
+  print(paste0(names(seasons_gt)[season]," Done!"))
+  
+}
+
+cv.reg.basic = rbind(cv.reg.basic[[1]],
+                       cv.reg.basic[[2]],
+                       cv.reg.basic[[3]],
+                       cv.reg.basic[[4]],
+                       cv.reg.basic[[5]],
+                       cv.reg.basic[[6]],
+                       cv.reg.basic[[7]])
+
+str(cv.reg.basic)
+
+write.table(cv.reg.basic, './Data/reg_cv_basic.csv')
+
+
+```
+## Regularized / Simple Negative Binomial - Basic + Google Trends (Not running now)
+
+```{r add GT, eval=FALSE, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+cv.reg.addGT = c()
+for (season in 4:length(seasons_gt)) {
+  # helper variables
+  i1 = seasons_gt[[season]][1]
+  i2 = seasons_gt[[season]][2]
+  current_season_cv = seq(i1, i2, by=1)
+  current_train = c(1:(i1-1))
+  
+  # perform cross-validation
+  cv.reg.pred <- sapply(current_season_cv,
+                        FUN = regCvTotal,
+                        data = model_data,
+                        x_col=reg.col.addGT)
+  # helper variables
+  PREDL = length(cv.reg.pred[1,])
+  
+  # data ready for ensemble training
+  cv.reg.addGT[[season]] = data.frame(
+    season = rep(names(seasons_gt)[season], times = PREDL, each=4),
+    predWeek = rep(noro_eng$Week[i1:(i2)], each=4),
+    predYear = rep(noro_eng$Year[i1:(i2)], each=4),# 4 prediction times=PREDL,
+    predType = rep(c(1,2,3,4), times = PREDL),
+    regPred = unlist(cv.reg.pred['pred.reg.nb',]),
+    nbPred = unlist(cv.reg.pred['pred.nb',]),
+    nbLower = unlist(cv.reg.pred['lower',]),
+    nbUpper = unlist(cv.reg.pred['upper',]),
+    observed = unlist(cv.reg.pred['observed',]))
+  
+  print(paste0(names(seasons_gt)[season]," Done!"))
+  
+}
+
+cv.reg.addGT = rbind(cv.reg.addGT[[1]],
+                       cv.reg.addGT[[2]],
+                       cv.reg.addGT[[3]],
+                       cv.reg.addGT[[4]],
+                       cv.reg.addGT[[5]],
+                       cv.reg.addGT[[6]],
+                       cv.reg.addGT[[7]])
+
+str(cv.reg.addGT)
+
+write.table(cv.reg.addGT, './Data/reg_cv_addGT.csv')
+
+
+```
+
+
+## Regularized / Simple Negative Binomial - Basic + CET 
+
+```{r add CET, echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+cv.reg.addCET = c()
+for (season in 4:length(seasons_gt)) {
+  # helper variables
+  i1 = seasons_gt[[season]][1]
+  i2 = seasons_gt[[season]][2]
+  current_season_cv = seq(i1, i2, by=1)
+  current_train = c(1:(i1-1))
+  
+  # perform cross-validation
+  cv.reg.pred <- sapply(current_season_cv,
+                        FUN = regCvTotal,
+                        data = model_data,
+                        x_col=reg.col.addCET)
+  # helper variables
+  PREDL = length(cv.reg.pred[1,])
+  
+  # data ready for ensemble training
+  cv.reg.addCET[[season]] = data.frame(
+    season = rep(names(seasons_gt)[season], times = PREDL, each=4),
+    predWeek = rep(noro_eng$Week[i1:(i2)], each=4),
+    predYear = rep(noro_eng$Year[i1:(i2)], each=4),# 4 prediction times=PREDL,
+    predType = rep(c(1,2,3,4), times = PREDL),
+    regPred = unlist(cv.reg.pred['pred.reg.nb',]),
+    nbPred = unlist(cv.reg.pred['pred.nb',]),
+    nbLower = unlist(cv.reg.pred['lower',]),
+    nbUpper = unlist(cv.reg.pred['upper',]),
+    observed = unlist(cv.reg.pred['observed',]))
+  
+  print(paste0(names(seasons_gt)[season]," Done!"))
+  
+}
+
+cv.reg.addCET = rbind(cv.reg.addCET[[1]],
+                       cv.reg.addCET[[2]],
+                       cv.reg.addCET[[3]],
+                       cv.reg.addCET[[4]],
+                       cv.reg.addCET[[5]],
+                       cv.reg.addCET[[6]],
+                       cv.reg.addCET[[7]])
+
+str(cv.reg.addCET)
+
+write.table(cv.reg.addCET, './Data/reg_cv_addCET.csv')
+
+
+```
+
+## Regularized / Simple Negative Binomial - Basic + CET + Mobility
+
+```{r add Mobility, echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+cv.reg.addMobility = c()
+for (season in 4:length(seasons_gt)) {
+  # helper variables
+  i1 = seasons_gt[[season]][1]
+  i2 = seasons_gt[[season]][2]
+  current_season_cv = seq(i1, i2, by=1)
+  current_train = c(1:(i1-1))
+  
+  # perform cross-validation
+  cv.reg.pred <- sapply(current_season_cv,
+                        FUN = regCvTotal,
+                        data = model_data,
+                        x_col=reg.col.addMobility)
+  # helper variables
+  PREDL = length(cv.reg.pred[1,])
+  
+  # data ready for ensemble training
+  cv.reg.addMobility[[season]] = data.frame(
+    season = rep(names(seasons_gt)[season], times = PREDL, each=4),
+    predWeek = rep(noro_eng$Week[i1:(i2)], each=4),
+    predYear = rep(noro_eng$Year[i1:(i2)], each=4),# 4 prediction times=PREDL,
+    predType = rep(c(1,2,3,4), times = PREDL),
+    regPred = unlist(cv.reg.pred['pred.reg.nb',]),
+    nbPred = unlist(cv.reg.pred['pred.nb',]),
+    nbLower = unlist(cv.reg.pred['lower',]),
+    nbUpper = unlist(cv.reg.pred['upper',]),
+    observed = unlist(cv.reg.pred['observed',]))
+  
+  print(paste0(names(seasons_gt)[season]," Done!"))
+  
+}
+
+cv.reg.addMobility = rbind(cv.reg.addMobility[[1]],
+                       cv.reg.addMobility[[2]],
+                       cv.reg.addMobility[[3]],
+                       cv.reg.addMobility[[4]],
+                       cv.reg.addMobility[[5]],
+                       cv.reg.addMobility[[6]],
+                       cv.reg.addMobility[[7]])
+
+str(cv.reg.addMobility)
+
+write.table(cv.reg.addMobility, './Data/reg_cv_addMobility.csv')
+
+
+```

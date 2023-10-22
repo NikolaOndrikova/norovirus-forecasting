@@ -1,0 +1,285 @@
+---
+title: "Norovirus Forecasting in England - TSGLM"
+author: "Nikola Ondrikova"
+date: "28/07/2023"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(MASS)
+library(tscount)
+library(dplyr)
+
+#Import data
+predictors <- read.csv("./Data/predictors.csv", sep="")
+noro_noise <- read.csv("./Data/noro_with_noise.csv", sep="")
+NL = length(noro_noise[,1])
+noro_ts = ts(noro_noise$count, start = c(2009,27), 
+             end = c(2021, 26), frequency = 52.25)
+
+# Define a function to get indices
+get_indices <- function(year, week_start = 27, week_end = 26) {
+  start <- which(noro_noise$Year == year & noro_noise$Week == week_start)
+  end <- which(noro_noise$Year == year + 1 & noro_noise$Week == week_end)
+  c(start, end)
+}
+
+# Use the function to create the list
+season_index <- list(
+  s1415 = get_indices(2014),
+  s1516 = get_indices(2015),
+  s1617 = get_indices(2016),
+  s1718 = get_indices(2017),
+  s1819 = get_indices(2018),
+  s1920 = get_indices(2019),
+  s2021 = get_indices(2020)
+)
+
+# Create norovirus time series
+noro_ts = ts(noro_noise$count, start = c(2009,27), 
+             end = c(2021, 26), frequency = 52.25)
+
+### CV Function:
+tsglmCvTotal <- function(this.fold, X_data = predictors, y = noro_ts){
+  
+  TRAIN <- 1:(this.fold-4)
+  TEST <- max(TRAIN) + 1:4
+  
+  set.seed(123589)
+  model_fit <- tsglm(ts = noro_ts[TRAIN],
+                     xreg = X_data[TRAIN,],
+                     model = list(past_obs=c(1,26,52)),
+                     distr = "nbinom", link = 'log') 
+  
+  preds <- predict(model_fit,n.ahead = 4, B=5000,
+                   newxreg = X_data[TEST,])
+  
+  predictions <- cbind.data.frame(
+    as.numeric(as.vector(preds$pred)),
+    as.numeric(preds$interval[,1]),
+    as.numeric(preds$interval[,2]))
+  names(predictions) <- c("Pred","Lower","Upper")
+  
+  this.result <- data.frame(pred = as.vector(predictions$Pred),
+                            lower = predictions$Lower,
+                            upper = predictions$Upper,
+                            observed = noro_ts[TEST])
+  
+  gc()
+  
+  return(this.result)
+}
+
+```
+
+## Variable Combinations
+
+
+```{r sets of predictors}
+predictors.basic <- data.frame(
+  linearTrend=seq(NL)/52,
+  pandemic=predictors$pandemic,
+  pandemic_long = predictors$pandemic_long,
+  christmas52 = ifelse(noro_noise$Week==52,1, 0)
+)
+
+predictors.addCET <- data.frame(
+  linearTrend=seq(NL)/52,
+  pandemic=predictors$pandemic,
+  pandemic_long = predictors$pandemic_long,
+  temperature = predictors$temperature,
+  christmas52 = ifelse(noro_noise$Week==52,1, 0)
+)
+
+predictors.addMobility <- data.frame(
+  linearTrend=seq(NL)/52,
+  pandemic=predictors$pandemic,
+  pandemic_long = predictors$pandemic_long,
+  temperature = predictors$temperature,
+  rr_estimate = predictors$rr_estimate,
+  gp_estimate = predictors$gp_estimate,
+  r_estimate = predictors$r_estimate,
+  t_estimate = predictors$t_estimate,
+  w_estimate = predictors$w_estimate,
+  christmas52 = ifelse(noro_noise$Week==52,1, 0)
+)
+
+
+```
+
+## Model variations - Basic
+
+```{r tsglm-basic, echo=FALSE}
+cv.tsglm.basic = c()
+for (season in 4:length(season_index)) {
+  # helper variables
+  i1 = season_index[[season]][1]
+  i2 = season_index[[season]][2]
+  current_season_cv = seq(i1, i2, by=1)
+  
+  # perform cross-validation
+  cv.tsglm.pred <- sapply(current_season_cv,
+                          FUN = tsglmCvTotal,
+                          X_data = predictors.basic, 
+                          y = noro_ts)
+  # helper variables
+  PREDL = length(cv.tsglm.pred[1,])
+ 
+  cv.tsglm.basic[[season]] = data.frame(
+    season = rep(names(season_index)[season], times=PREDL, each=4), #each=4
+    predWeek = rep(noro_noise$Week[i1:i2], each=4),
+    predYear = rep(noro_noise$Year[i1:i2], each=4),# 4 prediction 
+    predType = rep(c(1,2,3,4), times = PREDL),
+    tsglmPred = unlist(cv.tsglm.pred['pred',]),
+    tsglmLower = unlist(cv.tsglm.pred['lower',]),
+    tsglmUpper = unlist(cv.tsglm.pred['upper',]),
+    observed = unlist(cv.tsglm.pred['observed',]))
+  
+  print(paste0(names(season_index)[season]," Done!"))
+  
+}
+
+cv.tsglm.basic = rbind(cv.tsglm.basic[[1]],
+                       cv.tsglm.basic[[2]],
+                       cv.tsglm.basic[[3]],
+                       cv.tsglm.basic[[4]],
+                       cv.tsglm.basic[[5]],
+                       cv.tsglm.basic[[6]],
+                       cv.tsglm.basic[[7]])
+
+str(cv.tsglm.basic)
+
+write.table(cv.tsglm.basic, './Data/tsglm_cv_basic.csv')
+
+# have a look at the model coefficients etc.
+set.seed(123589)
+model_fit.basic <- tsglm(ts = noro_ts,
+                   xreg = predictors.basic,
+                   model = list(past_obs=c(1,26,52)),
+                   distr = "nbinom", link = 'log') 
+
+
+print(scoring(model_fit.basic)[c(1,4,6)])
+summary(model_fit.basic, B = 500)
+plot(model_fit.basic)
+
+```
+
+## Model variations - Basic + CET
+
+```{r tsglm-CET, echo=FALSE}
+cv.tsglm.addCET = c()
+for (season in 4:length(season_index)) {
+  # helper variables
+  i1 = season_index[[season]][1]
+  i2 = season_index[[season]][2]
+  current_season_cv = seq(i1, i2, by=1)
+  
+  # perform cross-validation
+  cv.tsglm.pred <- sapply(current_season_cv,
+                          FUN = tsglmCvTotal,
+                          X_data = predictors.addCET, 
+                          y = noro_ts)
+  # helper variables
+  PREDL = length(cv.tsglm.pred[1,])
+ 
+  cv.tsglm.addCET[[season]] = data.frame(
+    season = rep(names(season_index)[season], times=PREDL, each=4), #each=4
+    predWeek = rep(noro_noise$Week[i1:i2], each=4),
+    predYear = rep(noro_noise$Year[i1:i2], each=4),# 4 prediction 
+    predType = rep(c(1,2,3,4), times = PREDL),
+    tsglmPred = unlist(cv.tsglm.pred['pred',]),
+    tsglmLower = unlist(cv.tsglm.pred['lower',]),
+    tsglmUpper = unlist(cv.tsglm.pred['upper',]),
+    observed = unlist(cv.tsglm.pred['observed',]))
+  
+  print(paste0(names(season_index)[season]," Done!"))
+  
+}
+
+cv.tsglm.addCET = rbind(cv.tsglm.addCET[[1]],
+                       cv.tsglm.addCET[[2]],
+                       cv.tsglm.addCET[[3]],
+                       cv.tsglm.addCET[[4]],
+                       cv.tsglm.addCET[[5]],
+                       cv.tsglm.addCET[[6]],
+                       cv.tsglm.addCET[[7]])
+
+str(cv.tsglm.addCET)
+
+write.table(cv.tsglm.addCET, './Data/tsglm_cv_addCET.csv')
+
+# have a look at the model coefficients etc.
+set.seed(123589)
+model_fit.addCET <- tsglm(ts = noro_ts,
+                   xreg = predictors.addCET,
+                   model = list(past_obs=c(1,26,52)),
+                   distr = "nbinom", link = 'log') 
+
+
+print(scoring(model_fit.addCET)[c(1,4,6)])
+summary(model_fit.addCET, B = 500)
+plot(model_fit.addCET)
+
+
+```
+
+## Model variations - Basic + CET + Mobility
+
+```{r tsglm-mobility, echo=FALSE}
+cv.tsglm.addMobility = c()
+for (season in 4:length(season_index)) {
+  # helper variables
+  i1 = season_index[[season]][1]
+  i2 = season_index[[season]][2]
+  current_season_cv = seq(i1, i2, by=1)
+  
+  # perform cross-validation
+  cv.tsglm.pred <- sapply(current_season_cv,
+                          FUN = tsglmCvTotal,
+                          X_data = predictors.addMobility, 
+                          y = noro_ts)
+  # helper variables
+  PREDL = length(cv.tsglm.pred[1,])
+ 
+  cv.tsglm.addMobility[[season]] = data.frame(
+    season = rep(names(season_index)[season], times=PREDL, each=4), #each=4
+    predWeek = rep(noro_noise$Week[i1:i2], each=4),
+    predYear = rep(noro_noise$Year[i1:i2], each=4),# 4 prediction 
+    predType = rep(c(1,2,3,4), times = PREDL),
+    tsglmPred = unlist(cv.tsglm.pred['pred',]),
+    tsglmLower = unlist(cv.tsglm.pred['lower',]),
+    tsglmUpper = unlist(cv.tsglm.pred['upper',]),
+    observed = unlist(cv.tsglm.pred['observed',]))
+  
+  print(paste0(names(season_index)[season]," Done!"))
+  
+}
+
+cv.tsglm.addMobility = rbind(cv.tsglm.addMobility[[1]],
+                       cv.tsglm.addMobility[[2]],
+                       cv.tsglm.addMobility[[3]],
+                       cv.tsglm.addMobility[[4]],
+                       cv.tsglm.addMobility[[5]],
+                       cv.tsglm.addMobility[[6]],
+                       cv.tsglm.addMobility[[7]])
+
+str(cv.tsglm.addMobility)
+
+write.table(cv.tsglm.addMobility, './Data/tsglm_cv_addMobility.csv')
+
+# have a look at the model coefficients etc.
+set.seed(123589)
+model_fit.addMobility <- tsglm(ts = noro_ts,
+                   xreg = predictors.addMobility,
+                   model = list(past_obs=c(1,26,52)),
+                   distr = "nbinom", link = 'log') 
+
+
+print(scoring(model_fit.addMobility)[c(1,4,6)])
+summary(model_fit.addMobility, B = 500)
+plot(model_fit.addMobility)
+```
